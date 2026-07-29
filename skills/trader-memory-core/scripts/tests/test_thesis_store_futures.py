@@ -23,6 +23,7 @@ from pathlib import Path
 import pytest
 import thesis_review
 import thesis_store
+import yaml
 
 # -- Helpers -------------------------------------------------------------------
 
@@ -1719,6 +1720,138 @@ def test_trim_futures_rejects_overflow_with_finite_operands(tmp_path: Path):
     t = thesis_store.get(tmp_path, tid)
     assert t["status"] == "ACTIVE"
     assert t["position"]["quantity_remaining"] == 2
+
+
+def test_close_futures_rejects_disk_corrupted_huge_quantity_remaining(tmp_path: Path):
+    """Issue #258: a huge quantity_remaining loaded from a hand-edited
+    thesis must fail closed with ValueError during final-leg arithmetic,
+    not leak an uncaught OverflowError or persist a partial close."""
+    tid = _active_futures(
+        tmp_path,
+        contracts=2,
+        multiplier=50,
+        entry_price=100.0,
+        ticker="ESDISKHUGEREM",
+    )
+    thesis = thesis_store.get(tmp_path, tid)
+    thesis["position"]["quantity_remaining"] = 10**400
+    yaml_path = tmp_path / f"{tid}.yaml"
+    yaml_path.write_text(yaml.dump(thesis, default_flow_style=False), encoding="utf-8")
+
+    thesis_before = _state_file_hash(tmp_path, tid)
+    index_before = _index_file_hash(tmp_path)
+    with pytest.raises(ValueError, match="computed proceeds/realized_pnl overflowed"):
+        thesis_store.close(tmp_path, tid, "manual", 120.0, "2026-05-10T00:00:00+00:00")
+
+    assert _state_file_hash(tmp_path, tid) == thesis_before
+    assert _index_file_hash(tmp_path) == index_before
+    reloaded = thesis_store.get(tmp_path, tid)
+    assert reloaded["status"] == "ACTIVE"
+    assert reloaded["position"]["quantity_remaining"] == 10**400
+    assert reloaded["outcome"]["pnl_dollars"] is None
+
+
+def test_close_futures_rejects_disk_corrupted_huge_original_quantity(tmp_path: Path):
+    """Issue #258: a huge original quantity with a small open remainder
+    reaches the futures pnl_pct denominator after the final leg succeeds.
+    That OverflowError must be normalized before any state is persisted."""
+    tid = _active_futures(
+        tmp_path,
+        contracts=2,
+        multiplier=50,
+        entry_price=100.0,
+        ticker="ESDISKHUGEORIG",
+    )
+    thesis = thesis_store.get(tmp_path, tid)
+    thesis["position"]["quantity"] = 10**400
+    thesis["position"]["quantity_remaining"] = 1
+    yaml_path = tmp_path / f"{tid}.yaml"
+    yaml_path.write_text(yaml.dump(thesis, default_flow_style=False), encoding="utf-8")
+
+    thesis_before = _state_file_hash(tmp_path, tid)
+    index_before = _index_file_hash(tmp_path)
+    with pytest.raises(ValueError, match="computed pnl_pct overflowed"):
+        thesis_store.close(tmp_path, tid, "manual", 120.0, "2026-05-10T00:00:00+00:00")
+
+    assert _state_file_hash(tmp_path, tid) == thesis_before
+    assert _index_file_hash(tmp_path) == index_before
+    reloaded = thesis_store.get(tmp_path, tid)
+    assert reloaded["status"] == "ACTIVE"
+    assert reloaded["position"]["quantity"] == 10**400
+    assert reloaded["position"]["quantity_remaining"] == 1
+    assert reloaded["outcome"]["pnl_dollars"] is None
+
+
+def test_trim_futures_rejects_disk_corrupted_huge_multiplier(tmp_path: Path):
+    """Issue #258: partial-trim P&L arithmetic must normalize a huge
+    disk-corrupted multiplier to ValueError and leave both state files
+    byte-identical."""
+    tid = _active_futures(
+        tmp_path,
+        contracts=2,
+        multiplier=50,
+        entry_price=100.0,
+        ticker="ESDISKHUGEMULT",
+    )
+    thesis = thesis_store.get(tmp_path, tid)
+    thesis["position"]["multiplier"] = 10**400
+    yaml_path = tmp_path / f"{tid}.yaml"
+    yaml_path.write_text(yaml.dump(thesis, default_flow_style=False), encoding="utf-8")
+
+    thesis_before = _state_file_hash(tmp_path, tid)
+    index_before = _index_file_hash(tmp_path)
+    with pytest.raises(ValueError, match="computed realized_pnl/proceeds overflowed"):
+        thesis_store.trim(tmp_path, tid, 1, 120.0, "2026-05-10")
+
+    assert _state_file_hash(tmp_path, tid) == thesis_before
+    assert _index_file_hash(tmp_path) == index_before
+    reloaded = thesis_store.get(tmp_path, tid)
+    assert reloaded["status"] == "ACTIVE"
+    assert reloaded["position"]["quantity_remaining"] == 2
+    assert reloaded["position"]["multiplier"] == 10**400
+    assert reloaded["outcome"]["pnl_dollars"] is None
+
+
+def test_full_trim_futures_rejects_disk_corrupted_huge_realized_ledger(
+    tmp_path: Path,
+):
+    """Issue #258: cumulative _sum_realized() can remain a huge Python
+    int until math.isfinite() itself raises OverflowError. Exercise that
+    path through the public full-trim API and require an atomic ValueError."""
+    tid = _active_futures(
+        tmp_path,
+        contracts=1,
+        multiplier=50,
+        entry_price=100,
+        ticker="ESDISKHUGELEDGER",
+    )
+    thesis = thesis_store.get(tmp_path, tid)
+    thesis["status_history"].append(
+        {
+            "status": "PARTIALLY_CLOSED",
+            "at": "2026-05-05T00:00:00+00:00",
+            "reason": "disk-corrupted ledger",
+            "quantity_sold": 1,
+            "price": 100,
+            "proceeds": 100,
+            "realized_pnl": 10**400,
+        }
+    )
+    yaml_path = tmp_path / f"{tid}.yaml"
+    yaml_path.write_text(yaml.dump(thesis, default_flow_style=False), encoding="utf-8")
+
+    thesis_before = _state_file_hash(tmp_path, tid)
+    index_before = _index_file_hash(tmp_path)
+    with pytest.raises(ValueError, match="computed cumulative pnl_dollars overflowed"):
+        thesis_store.trim(tmp_path, tid, 1, 120, "2026-05-10")
+
+    assert _state_file_hash(tmp_path, tid) == thesis_before
+    assert _index_file_hash(tmp_path) == index_before
+    reloaded = thesis_store.get(tmp_path, tid)
+    assert reloaded["status"] == "ACTIVE"
+    assert reloaded["position"]["quantity_remaining"] == 1
+    assert reloaded["status_history"][-1]["realized_pnl"] == 10**400
+    assert reloaded["outcome"]["pnl_dollars"] is None
 
 
 def test_open_position_direct_open_requires_contract_currency(tmp_path: Path):
