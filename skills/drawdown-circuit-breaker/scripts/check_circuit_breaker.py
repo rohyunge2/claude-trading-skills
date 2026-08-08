@@ -33,6 +33,18 @@ PRODUCER_UTC_MIDNIGHT_RE = re.compile(
 )
 RECOVERABLE_DATA_WARNING_PREFIXES = ("Inferred missing realized_pnl from outcome.pnl_dollars",)
 LEDGER_EVENT_FIELDS = {"shares_sold", "quantity_sold", "price", "proceeds"}
+REQUIRED_THESIS_FIELDS = {
+    "thesis_id",
+    "ticker",
+    "created_at",
+    "updated_at",
+    "thesis_type",
+    "status",
+    "status_history",
+    "thesis_statement",
+    "origin",
+}
+REQUIRED_HISTORY_FIELDS = {"status", "at", "reason"}
 
 
 @dataclass(frozen=True)
@@ -93,6 +105,16 @@ def _positive_finite_arg(value: str) -> float:
 def _warning_blocks_new_risk(warning: str) -> bool:
     """Return whether a data warning means risk inputs were lost or conflicted."""
     return not warning.startswith(RECOVERABLE_DATA_WARNING_PREFIXES)
+
+
+def _parse_realized_pnl(value: Any) -> float:
+    """Accept only finite YAML numeric values for realized P&L."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("realized_pnl must be a numeric value")
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise ValueError("realized_pnl must be finite (non-finite value)")
+    return parsed
 
 
 def _is_ledger_event_missing_pnl(event: dict[str, Any]) -> bool:
@@ -197,21 +219,57 @@ def _load_thesis_file(path: Path) -> dict:
         data = yaml.safe_load(f)
     if not isinstance(data, dict):
         raise ValueError("thesis file must contain a YAML object")
+    missing_fields = sorted(REQUIRED_THESIS_FIELDS - data.keys())
+    if missing_fields:
+        raise ValueError(f"thesis file missing required field(s): {', '.join(missing_fields)}")
+    for field in (
+        "thesis_id",
+        "ticker",
+        "created_at",
+        "updated_at",
+        "thesis_type",
+        "thesis_statement",
+    ):
+        if not isinstance(data[field], str) or not data[field].strip():
+            raise ValueError(f"thesis file field {field} must be a non-empty string")
+    origin = data["origin"]
+    if not isinstance(origin, dict) or any(
+        not isinstance(origin.get(field), str) or not origin[field].strip()
+        for field in ("skill", "output_file")
+    ):
+        raise ValueError("thesis file origin must contain skill and output_file")
     status = data.get("status")
     if status not in THESIS_STATUSES:
         raise ValueError(f"thesis file has missing or unrecognized status: {status!r}")
     history = data.get("status_history")
     if not isinstance(history, list):
         raise ValueError("thesis status_history must be a list")
+    for index, event in enumerate(history):
+        if not isinstance(event, dict):
+            raise ValueError(f"status_history[{index}] must be an object")
+        missing_event_fields = sorted(REQUIRED_HISTORY_FIELDS - event.keys())
+        if missing_event_fields:
+            raise ValueError(
+                f"status_history[{index}] missing required field(s): "
+                f"{', '.join(missing_event_fields)}"
+            )
+        if event.get("status") not in THESIS_STATUSES:
+            raise ValueError(
+                f"status_history[{index}] has missing or unrecognized status: "
+                f"{event.get('status')!r}"
+            )
+        _parse_event_datetime(event["at"])
+        if not isinstance(event["reason"], str) or not event["reason"].strip():
+            raise ValueError(f"status_history[{index}] reason must be a non-empty string")
+        if "realized_pnl" in event:
+            _parse_realized_pnl(event["realized_pnl"])
     if status == "PARTIALLY_CLOSED":
         has_valid_ledger_entry = False
         for event in history:
             if not isinstance(event, dict) or not _is_ledger_event_missing_pnl(event):
                 continue
             try:
-                realized_pnl = float(event["realized_pnl"])
-                if not math.isfinite(realized_pnl):
-                    raise ValueError
+                _parse_realized_pnl(event["realized_pnl"])
                 _parse_event_datetime(event.get("at"))
             except (KeyError, TypeError, ValueError, OverflowError):
                 continue
@@ -240,6 +298,8 @@ def load_theses(state_dir: Path) -> tuple[list[dict], str, list[str]]:
     """Load thesis YAMLs, returning (valid theses, data_quality, warnings)."""
     if not state_dir.exists():
         return [], "EMPTY_STATE", []
+    if not state_dir.is_dir():
+        return [], "PARTIAL", [f"State path is not a directory: {state_dir}"]
     paths = sorted(state_dir.glob("th_*.yaml"))
     if not paths:
         return [], "EMPTY_STATE", []
@@ -278,6 +338,14 @@ def _iter_ledger_entries(theses: Iterable[dict]) -> tuple[list[LedgerEntry], lis
                 )
                 thesis_ledger_invalid = True
                 continue
+            missing_event_fields = sorted(REQUIRED_HISTORY_FIELDS - event.keys())
+            if missing_event_fields:
+                warnings.append(
+                    f"Skipped malformed status_history event for {source}: "
+                    f"missing {', '.join(missing_event_fields)}"
+                )
+                thesis_ledger_invalid = True
+                continue
             if "realized_pnl" not in event:
                 if _is_ledger_event_missing_pnl(event):
                     warnings.append(
@@ -287,9 +355,7 @@ def _iter_ledger_entries(theses: Iterable[dict]) -> tuple[list[LedgerEntry], lis
                     thesis_ledger_invalid = True
                 continue
             try:
-                realized_pnl = float(event["realized_pnl"])
-                if not math.isfinite(realized_pnl):
-                    raise ValueError("non-finite realized_pnl")
+                realized_pnl = _parse_realized_pnl(event["realized_pnl"])
                 at = _parse_event_datetime(event.get("at"))
             except Exception as exc:  # noqa: BLE001 - record all malformed local ledger values.
                 warnings.append(f"Skipped realized_pnl event for {source}: {exc}")

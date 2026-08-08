@@ -108,6 +108,60 @@ def test_empty_state_is_allowed_with_empty_state_quality(tmp_path: Path):
     assert result["metrics"]["theses_scanned"] == 0
 
 
+def test_existing_state_file_halts_instead_of_looking_empty(tmp_path: Path):
+    state_path = tmp_path / "not-a-directory"
+    state_path.write_text("operator typo", encoding="utf-8")
+
+    result = evaluate_state(state_path)
+
+    assert result["recommendation"] == "HALTED"
+    assert result["data_quality"] == "PARTIAL"
+    assert result["metrics"]["theses_scanned"] == 0
+    assert any("not a directory" in warning for warning in result["warnings"])
+
+
+def test_minimal_active_thesis_is_rejected_before_risk_evaluation(tmp_path: Path):
+    state_dir = tmp_path / "theses"
+    state_dir.mkdir()
+    (state_dir / "th_minimal.yaml").write_text(
+        yaml.safe_dump({"status": "ACTIVE", "status_history": []}, sort_keys=False),
+        encoding="utf-8",
+    )
+
+    result = evaluate_state(state_dir)
+
+    assert result["recommendation"] == "HALTED"
+    assert result["data_quality"] == "PARTIAL"
+    assert any("missing required field" in warning for warning in result["warnings"])
+
+
+@pytest.mark.parametrize(
+    "malformed_event",
+    [
+        {},
+        {"status": "CLOSED", "at": "2026-07-02T10:00:00-04:00"},
+    ],
+)
+def test_malformed_history_blocks_terminal_outcome_fallback(tmp_path: Path, malformed_event: dict):
+    state_dir = tmp_path / "theses"
+    write_thesis(
+        state_dir,
+        "th_malformed_history_gm_20260702_0001",
+        history=[malformed_event],
+        pnl_dollars=-100.0,
+        exit_date="2026-07-02T10:00:00-04:00",
+    )
+
+    result = evaluate_state(state_dir)
+
+    assert result["recommendation"] == "HALTED"
+    assert result["data_quality"] == "PARTIAL"
+    assert result["metrics"]["realized_pnl_today"] == 0
+    assert any(
+        "status_history[0] missing required field" in warning for warning in result["warnings"]
+    )
+
+
 def test_realized_pnl_today_includes_partial_trim_and_daily_halt(tmp_path: Path):
     state_dir = tmp_path / "theses"
     write_thesis(
@@ -725,6 +779,57 @@ def test_non_finite_ledger_pnl_halts_without_contaminating_metrics(tmp_path: Pat
     json.dumps(result, allow_nan=False)
 
 
+@pytest.mark.parametrize("bad_pnl", [False, "-1.00"])
+def test_non_numeric_ledger_pnl_halts_without_coercion(tmp_path: Path, bad_pnl: object):
+    state_dir = tmp_path / "theses"
+    write_thesis(
+        state_dir,
+        "th_non_numeric_ledger_gm_20260702_0001",
+        status="PARTIALLY_CLOSED",
+        history=[
+            {
+                "status": "PARTIALLY_CLOSED",
+                "at": "2026-07-02T11:00:00-04:00",
+                "reason": "trim",
+                "realized_pnl": bad_pnl,
+            }
+        ],
+    )
+
+    result = evaluate_state(state_dir)
+
+    assert result["recommendation"] == "HALTED"
+    assert result["data_quality"] == "PARTIAL"
+    assert result["metrics"]["realized_pnl_today"] == 0
+    assert any("realized_pnl must be a numeric value" in warning for warning in result["warnings"])
+
+
+@pytest.mark.parametrize("bad_pnl", [False, "-1.00"])
+def test_terminal_non_numeric_ledger_pnl_blocks_outcome_fallback(tmp_path: Path, bad_pnl: object):
+    state_dir = tmp_path / "theses"
+    write_thesis(
+        state_dir,
+        "th_non_numeric_terminal_gm_20260702_0001",
+        history=[
+            {
+                "status": "CLOSED",
+                "at": "2026-07-02T10:00:00-04:00",
+                "reason": "manual",
+                "realized_pnl": bad_pnl,
+            }
+        ],
+        pnl_dollars=-100.0,
+        exit_date="2026-07-02T10:00:00-04:00",
+    )
+
+    result = evaluate_state(state_dir)
+
+    assert result["recommendation"] == "HALTED"
+    assert result["data_quality"] == "PARTIAL"
+    assert result["metrics"]["realized_pnl_today"] == 0
+    assert any("realized_pnl must be a numeric value" in warning for warning in result["warnings"])
+
+
 @pytest.mark.parametrize("bad_pnl", [float("nan"), float("inf"), float("-inf")])
 def test_non_finite_terminal_outcome_halts_without_counting_result(tmp_path: Path, bad_pnl: float):
     state_dir = tmp_path / "theses"
@@ -783,7 +888,7 @@ def test_malformed_or_incomplete_ledger_event_halts_even_with_outcome_fallback(
 
     assert result["recommendation"] == "HALTED"
     assert result["data_quality"] == "PARTIAL"
-    assert any("status_history event" in warning for warning in result["warnings"])
+    assert any("status_history" in warning for warning in result["warnings"])
     assert any(rule["rule"] == "incomplete_state_data" for rule in result["triggered_rules"])
 
 
@@ -828,8 +933,13 @@ def test_oversized_terminal_outcome_becomes_blocking_warning(tmp_path: Path):
     thesis = {
         "thesis_id": "th_oversized_outcome_gm_20260702_0001",
         "ticker": "HUGE",
+        "created_at": "2026-06-01T09:30:00-04:00",
+        "updated_at": "2026-07-02T16:00:00-04:00",
+        "thesis_type": "growth_momentum",
         "status": "CLOSED",
         "status_history": [],
+        "thesis_statement": "HUGE test thesis",
+        "origin": {"skill": "test", "output_file": "fixture.json"},
         "exit": {
             "actual_date": "2026-07-02T10:00:00-04:00",
             "actual_price": 100.0,
