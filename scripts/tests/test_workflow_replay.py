@@ -23,6 +23,7 @@ from workflow_replay import (  # noqa: E402
     compare_trees,
     coverage_errors,
     execute_replay,
+    generate_goldens,
     load_yaml,
     validate_coverage,
     validate_spec,
@@ -103,6 +104,75 @@ def test_fixed_timestamp_must_be_rfc3339_without_optional_format_extra(
 
     with pytest.raises(ReplayError, match="RFC 3339 date-time"):
         validate_spec(ROOT, spec_path)
+
+
+@pytest.mark.parametrize(
+    "golden_dir",
+    [".", "replay.yaml", "replay-inputs", "replay-inputs/prices.json"],
+)
+def test_golden_dir_cannot_overlap_replay_sources(
+    golden_dir: str,
+    tmp_path: Path,
+) -> None:
+    spec_path, payload = _copy_spec(tmp_path)
+    payload["variants"]["required-only"]["golden_dir"] = golden_dir
+    spec_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+
+    with pytest.raises(ReplayError, match="golden_dir.*overlaps replay source"):
+        validate_spec(ROOT, spec_path)
+
+
+@pytest.mark.parametrize(
+    ("required_dir", "full_dir"),
+    [
+        ("same-output", "same-output"),
+        ("parent-output", "parent-output/full-path"),
+        ("parent-output/required-only", "parent-output"),
+    ],
+)
+def test_variant_golden_dirs_must_be_disjoint(
+    required_dir: str,
+    full_dir: str,
+    tmp_path: Path,
+) -> None:
+    spec_path, payload = _copy_spec(tmp_path)
+    payload["variants"]["required-only"]["golden_dir"] = required_dir
+    payload["variants"]["full-path"]["golden_dir"] = full_dir
+    spec_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+
+    with pytest.raises(ReplayError, match="variant golden_dir paths overlap"):
+        validate_spec(ROOT, spec_path)
+
+
+def test_generate_rejects_source_destination_without_deleting_existing_files(
+    tmp_path: Path,
+) -> None:
+    spec_path, payload = _copy_spec(tmp_path)
+    payload["variants"]["required-only"]["golden_dir"] = "."
+    spec_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+    sentinel = tmp_path / "keep.txt"
+    sentinel.write_bytes(b"keep\n")
+    before = {
+        path.relative_to(tmp_path): path.read_bytes()
+        for path in tmp_path.rglob("*")
+        if path.is_file()
+    }
+
+    coverage = load_yaml(COVERAGE)
+    coverage["covered"]["stockbee-fluency-loop"]["spec"] = "replay.yaml"
+    coverage_path = tmp_path / "replay-coverage.yaml"
+    coverage_path.write_text(yaml.safe_dump(coverage, sort_keys=False), encoding="utf-8")
+    before[coverage_path.relative_to(tmp_path)] = coverage_path.read_bytes()
+
+    with pytest.raises(ReplayError, match="golden_dir.*overlaps replay source"):
+        generate_goldens(ROOT, coverage_path)
+
+    after = {
+        path.relative_to(tmp_path): path.read_bytes()
+        for path in tmp_path.rglob("*")
+        if path.is_file()
+    }
+    assert after == before
 
 
 def test_required_only_replays_real_cli_and_handoffs_state(tmp_path: Path) -> None:

@@ -217,6 +217,45 @@ def _safe_relative(base: Path, value: str, label: str) -> Path:
     return resolved
 
 
+def _paths_overlap(left: Path, right: Path) -> bool:
+    """Return whether two resolved paths are equal or one contains the other."""
+    left = left.resolve()
+    right = right.resolve()
+    return left == right or left in right.parents or right in left.parents
+
+
+def _validate_golden_dirs(
+    spec_path: Path,
+    variants: Mapping[str, Any],
+    input_paths: Mapping[str, Path],
+) -> None:
+    """Keep generated trees disjoint from replay sources and from each other."""
+    spec_path = spec_path.resolve()
+    spec_dir = spec_path.parent
+    golden_paths: dict[str, Path] = {}
+    for variant_name in VARIANTS:
+        label = f"variants.{variant_name}.golden_dir"
+        golden = _safe_relative(spec_dir, variants[variant_name]["golden_dir"], label)
+        if golden == spec_dir or _paths_overlap(golden, spec_path):
+            raise ReplayError(f"{label} overlaps replay source: {golden}")
+        for input_name, input_path in input_paths.items():
+            if _paths_overlap(golden, input_path.parent):
+                raise ReplayError(
+                    f"{label} overlaps replay source inputs.{input_name} parent: "
+                    f"{input_path.parent}"
+                )
+        if golden.exists() and not golden.is_dir():
+            raise ReplayError(f"{label} must resolve to a directory: {golden}")
+        golden_paths[variant_name] = golden
+
+    required = golden_paths["required-only"]
+    full = golden_paths["full-path"]
+    if _paths_overlap(required, full):
+        raise ReplayError(
+            f"variant golden_dir paths overlap: required-only={required}, full-path={full}"
+        )
+
+
 def validate_spec(repo_root: Path, spec_path: Path) -> dict[str, Any]:
     spec = load_yaml(spec_path)
     schema = _load_json(SPEC_SCHEMA, "replay-spec schema")
@@ -309,12 +348,7 @@ def validate_spec(repo_root: Path, spec_path: Path) -> dict[str, Any]:
         )
     if variants["full-path"]["enabled_steps"] != expected_full:
         raise ReplayError("full-path enabled_steps must contain every workflow step")
-    for variant_name in VARIANTS:
-        _safe_relative(
-            spec_path.parent,
-            variants[variant_name]["golden_dir"],
-            f"variants.{variant_name}.golden_dir",
-        )
+    _validate_golden_dirs(spec_path, variants, input_paths)
 
     return {
         "workflow_id": workflow_id,

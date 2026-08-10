@@ -135,3 +135,8 @@ freezes the other ten current workflows as Phase 1 deferrals linked to Issue
 #294. A newly added workflow cannot join that frozen deferral set and must ship
 both required-only and full-path replay specs. Issue #294 remains open until
 all eleven workflows and their applicable failure modes are executable.
+
+Replay validation rejects a `golden_dir` that resolves to the replay spec or its
+directory, overlaps any offline-input directory, or overlaps the other
+variant's output tree. Generation fails before publication in those cases, so
+a malformed spec cannot replace its own source or input fixtures.
