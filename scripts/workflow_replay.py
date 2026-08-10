@@ -727,7 +727,20 @@ def _write_manifest(
             }
         )
     entries.sort(key=lambda item: (item["step"], item["artifact_id"]))
-    enabled = {item["step"] for item in report["steps"]}
+    completed_steps = [int(item["step"]) for item in report["steps"]]
+    completed = set(completed_steps)
+    halted_after = completed_steps[-1] if report["status"] == "halted" else None
+    required_steps_not_executed = [
+        {
+            "step": int(step["step"]),
+            "skill": step["skill"],
+            "reason": (
+                f"halted after step {halted_after}" if halted_after is not None else "not executed"
+            ),
+        }
+        for step in workflow["steps"]
+        if not step.get("optional") and int(step["step"]) not in completed
+    ]
     skipped = [
         {
             "step": int(step["step"]),
@@ -735,11 +748,14 @@ def _write_manifest(
             "reason": "required-only executable replay",
         }
         for step in workflow["steps"]
-        if step.get("optional") and int(step["step"]) not in enabled
+        if step.get("optional") and variant == "required-only"
     ]
     payload = {
         "workflow_id": workflow["id"],
         "sample_type": variant,
+        "status": report["status"],
+        "completed_steps": completed_steps,
+        "required_steps_not_executed": required_steps_not_executed,
         "illustrative": True,
         "generated_by": "scripts/workflow_replay.py generate",
         "prompt": "prompt.md",

@@ -116,6 +116,13 @@ decision but does not claim to execute or validate a native trader-memory-core
 journal append API. Both workflow gates are `record_only`, matching their
 review questions rather than inventing automatic pass/fail predicates.
 
+Generated replay manifests record the overall `status`, the exact
+`completed_steps`, and any `required_steps_not_executed`. A `halted` replay
+therefore remains distinguishable from a completed replay whose configured
+variant ended at the same step. `optional_steps_skipped` contains only steps
+intentionally disabled by the required-only variant, not steps bypassed by a
+runtime halt.
+
 Regenerate this pilot's committed outputs only with:
 
 ```bash

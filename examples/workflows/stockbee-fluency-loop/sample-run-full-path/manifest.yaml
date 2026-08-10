@@ -1,5 +1,12 @@
 workflow_id: stockbee-fluency-loop
 sample_type: full-path
+status: completed
+completed_steps:
+- 1
+- 2
+- 3
+- 4
+required_steps_not_executed: []
 illustrative: true
 generated_by: scripts/workflow_replay.py generate
 prompt: prompt.md

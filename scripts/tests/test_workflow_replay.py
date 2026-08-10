@@ -135,6 +135,9 @@ def test_required_only_replays_real_cli_and_handoffs_state(tmp_path: Path) -> No
     assert not (output / "04_accepted_lessons_log.yaml").exists()
 
     manifest = yaml.safe_load((output / "manifest.yaml").read_text(encoding="utf-8"))
+    assert manifest["status"] == "completed"
+    assert manifest["completed_steps"] == [1, 2, 3]
+    assert manifest["required_steps_not_executed"] == []
     bundles = {item["artifact_id"]: item["files"] for item in manifest["artifacts"]}
     assert bundles["model_book_ingest"]["state"] == "01_model_book.jsonl"
     assert bundles["matured_setup_outcomes"]["state"] == "02_model_book.jsonl"
@@ -156,6 +159,48 @@ def test_full_path_labels_manual_journal_provenance(tmp_path: Path) -> None:
     }
     assert all(len(digest) == 64 for digest in lessons["provenance"]["source_sha256"].values())
     assert lessons["source_artifacts"] == ["setup_fluency_summary", "rule_candidates"]
+
+
+def test_halt_manifest_records_status_and_unexecuted_required_steps(tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    workflows_dir = repo_root / "workflows"
+    workflows_dir.mkdir(parents=True)
+    workflow = load_yaml(ROOT / "workflows" / "stockbee-fluency-loop.yaml")
+    workflow["steps"][1]["decision_gate"] = True
+    (workflows_dir / "stockbee-fluency-loop.yaml").write_text(
+        yaml.safe_dump(workflow, sort_keys=False), encoding="utf-8"
+    )
+    shutil.copytree(
+        ROOT / "skills" / "stockbee-setup-fluency-trainer",
+        repo_root / "skills" / "stockbee-setup-fluency-trainer",
+    )
+
+    spec_dir = repo_root / "examples" / "workflows" / "stockbee-fluency-loop"
+    spec_dir.mkdir(parents=True)
+    shutil.copytree(SPEC.parent / "replay-inputs", spec_dir / "replay-inputs")
+    spec = load_yaml(SPEC)
+    spec["steps"][1]["gate_policy"] = "halt"
+    spec_path = spec_dir / "replay.yaml"
+    spec_path.write_text(yaml.safe_dump(spec, sort_keys=False), encoding="utf-8")
+
+    output = tmp_path / "halted"
+    report = execute_replay(repo_root, spec_path, "full-path", output)
+
+    assert report["status"] == "halted"
+    assert [step["step"] for step in report["steps"]] == [1, 2]
+    manifest = yaml.safe_load((output / "manifest.yaml").read_text(encoding="utf-8"))
+    assert manifest["status"] == "halted"
+    assert manifest["completed_steps"] == [1, 2]
+    assert manifest["required_steps_not_executed"] == [
+        {
+            "step": 3,
+            "skill": "stockbee-setup-fluency-trainer",
+            "reason": "halted after step 2",
+        }
+    ]
+    assert manifest["optional_steps_skipped"] == []
+    assert not (output / "03_setup_fluency_summary.json").exists()
+    assert not (output / "04_accepted_lessons_log.yaml").exists()
 
 
 @pytest.mark.parametrize("mutation", ["delete", "corrupt"])
