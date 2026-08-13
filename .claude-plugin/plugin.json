@@ -1,0 +1,20 @@
+{
+  "name": "claude-trading-skills",
+  "description": "72 trading skills: market regime detection, VCP/CANSLIM/dividend screeners, position sizing, backtesting, trade journaling and postmortems.",
+  "author": {
+    "name": "tradermonty",
+    "url": "https://github.com/tradermonty"
+  },
+  "homepage": "https://github.com/tradermonty/claude-trading-skills",
+  "repository": "https://github.com/tradermonty/claude-trading-skills",
+  "license": "MIT",
+  "keywords": [
+    "trading",
+    "stocks",
+    "screener",
+    "backtesting",
+    "portfolio",
+    "market-regime",
+    "finance"
+  ]
+}

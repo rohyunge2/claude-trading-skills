@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
+  "name": "trading-skills",
+  "description": "Personal mirror of tradermonty/claude-trading-skills, packaged as an installable plugin marketplace.",
+  "owner": {
+    "name": "rohyunge2",
+    "url": "https://github.com/rohyunge2"
+  },
+  "plugins": [
+    {
+      "name": "claude-trading-skills",
+      "displayName": "Trading Skills",
+      "source": "./",
+      "description": "72 trading skills: market regime detection, VCP/CANSLIM/dividend screeners, position sizing, backtesting, trade journaling and postmortems. Most screeners require an FMP API key; market-breadth-analyzer and uptrend-analyzer work with no key.",
+      "category": "finance",
+      "tags": ["trading", "stocks", "screener", "backtesting", "portfolio", "market-regime"],
+      "author": { "name": "tradermonty", "url": "https://github.com/tradermonty" },
+      "homepage": "https://github.com/tradermonty/claude-trading-skills",
+      "license": "MIT"
+    }
+  ]
+}
